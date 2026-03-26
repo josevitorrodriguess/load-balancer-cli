@@ -1,31 +1,46 @@
 package main
 
 import (
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 
-	"github.com/joho/godotenv"
+	"github.com/josevitorrodriguess/load-balancer-cli/internal/config/logger"
 )
 
 func main() {
-	godotenv.Load()
-	mux := http.NewServeMux()
-
-	// Root handler that will intercept all requests
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("Load Balancer is running"))
+	log := logger.New(logger.Config{
+		Level:  getEnv("LOG_LEVEL", "debug"),
+		Format: getEnv("LOG_FORMAT", "text"),
 	})
 
+	slog.SetDefault(log)
 
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "8080"
+	slog.Info("starting load balancer", "port", "8080")
+
+	mux := http.NewServeMux()
+
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		slog.Info("request received",
+			"method", r.Method,
+			"path", r.URL.Path,
+			"remote_addr", r.RemoteAddr,
+		)
+
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("ok"))
+	})
+
+	if err := http.ListenAndServe(":8080", mux); err != nil {
+		slog.Error("server failed", "error", err)
+		os.Exit(1)
 	}
+}
 
-	addr := ":" + port
-	log.Printf("Load Balancer running on http://localhost:%s", port)
-	log.Fatal(http.ListenAndServe(addr, mux))
-	
+func getEnv(key, fallback string) string {
+	value := os.Getenv(key)
+	if value == "" {
+		return fallback
+	}
+	return value
 }
