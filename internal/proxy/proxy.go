@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -15,56 +16,91 @@ import (
 	"github.com/josevitorrodriguess/load-balancer-cli/internal/balancer"
 )
 
+const maxAttempts = 3
+
 func StartProxy(mux *http.ServeMux, lb balancer.Balancer) error {
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		backend, err := lb.NextBackend()
+		rw := &responseWriter{ResponseWriter: w}
+		body, err := readRequestBody(r)
 		if err != nil {
-			http.Error(w, "no backend available", http.StatusBadGateway)
+			slog.Error("proxy error", "method", r.Method, "path", r.URL.Path, "error", err)
+			http.Error(rw, "failed to read request body", http.StatusBadRequest)
 			return
 		}
 
-		serverParsed, err := url.Parse(backend.URL)
-		if err != nil {
-			http.Error(w, "invalid backend url", http.StatusInternalServerError)
-			return
-		}
+		tried := make(map[string]struct{})
+		var lastErr error
 
-		prox := httputil.NewSingleHostReverseProxy(serverParsed)
-
-		originalDirector := prox.Director
-		prox.Director = func(req *http.Request) {
-			originalDirector(req)
-
-			req.URL.Scheme = serverParsed.Scheme
-			req.URL.Host = serverParsed.Host
-			req.Host = serverParsed.Host
-
-			ip, _, err := net.SplitHostPort(req.RemoteAddr)
+		for attempt := 0; attempt < maxAttempts; attempt++ {
+			backend, err := nextBackend(lb, tried)
 			if err != nil {
-				ip = req.RemoteAddr
+				if lastErr != nil {
+					ErrorHandler(rw, r, lastErr)
+					return
+				}
+
+				http.Error(rw, "no backend available", http.StatusBadGateway)
+				return
 			}
 
-			req.Header.Set("X-Forwarded-For", ip)
-			req.Header.Set("X-Real-IP", ip)
+			tried[backend.URL] = struct{}{}
 
-			if req.TLS != nil {
-				req.Header.Set("X-Forwarded-Proto", "https")
-			} else {
-				req.Header.Set("X-Forwarded-Proto", "http")
+			serverParsed, err := url.Parse(backend.URL)
+			if err != nil {
+				http.Error(rw, "invalid backend url", http.StatusInternalServerError)
+				return
+			}
+
+			prox := httputil.NewSingleHostReverseProxy(serverParsed)
+			originalDirector := prox.Director
+
+			prox.Director = func(req *http.Request) {
+				originalDirector(req)
+
+				req.URL.Scheme = serverParsed.Scheme
+				req.URL.Host = serverParsed.Host
+				req.Host = serverParsed.Host
+
+				ip, _, err := net.SplitHostPort(req.RemoteAddr)
+				if err != nil {
+					ip = req.RemoteAddr
+				}
+
+				req.Header.Set("X-Forwarded-For", ip)
+				req.Header.Set("X-Real-IP", ip)
+
+				if req.TLS != nil {
+					req.Header.Set("X-Forwarded-Proto", "https")
+				} else {
+					req.Header.Set("X-Forwarded-Proto", "http")
+				}
+			}
+
+			attemptFailed := false
+			prox.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
+				attemptFailed = true
+				lastErr = err
+				_ = lb.ReportFailure(backend.URL)
+			}
+
+			prox.ServeHTTP(rw, cloneRequest(r, body))
+
+			if !attemptFailed {
+				return
+			}
+
+			if headersWritten(rw) {
+				return
 			}
 		}
 
-		prox.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
-			_ = lb.ReportFailure(backend.URL)
-			ErrorHandler(w, r, err)
+		if lastErr != nil {
+			ErrorHandler(rw, r, lastErr)
 		}
-
-		prox.ServeHTTP(w, r)
 	})
 
 	return nil
 }
-
 
 func ErrorHandler(w http.ResponseWriter, r *http.Request, err error) {
 	status, code, message := classifyProxyError(err)
@@ -129,10 +165,69 @@ func writeProxyError(w http.ResponseWriter, status int, code, message string) {
 }
 
 func headersWritten(w http.ResponseWriter) bool {
-	type writeHeaderTracker interface {
-		Written() bool
+	tracker, ok := w.(*responseWriter)
+	return ok && tracker.written
+}
+
+func readRequestBody(r *http.Request) ([]byte, error) {
+	if r.Body == nil {
+		return nil, nil
 	}
 
-	tracker, ok := w.(writeHeaderTracker)
-	return ok && tracker.Written()
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	r.Body.Close()
+	return body, nil
+}
+
+func cloneRequest(r *http.Request, body []byte) *http.Request {
+	req := r.Clone(r.Context())
+	req.Header = r.Header.Clone()
+	req.Body = io.NopCloser(bytes.NewReader(body))
+	req.ContentLength = int64(len(body))
+	req.GetBody = func() (io.ReadCloser, error) {
+		return io.NopCloser(bytes.NewReader(body)), nil
+	}
+
+	return req
+}
+
+func nextBackend(lb balancer.Balancer, tried map[string]struct{}) (*balancer.Backend, error) {
+	backends := lb.Backends()
+	if len(backends) == 0 {
+		return nil, balancer.ErrNoBackendAvailable
+	}
+
+	for i := 0; i < len(backends); i++ {
+		backend, err := lb.NextBackend()
+		if err != nil {
+			return nil, err
+		}
+
+		if _, ok := tried[backend.URL]; ok {
+			continue
+		}
+
+		return backend, nil
+	}
+
+	return nil, balancer.ErrNoBackendAvailable
+}
+
+type responseWriter struct {
+	http.ResponseWriter
+	written bool
+}
+
+func (w *responseWriter) WriteHeader(statusCode int) {
+	w.written = true
+	w.ResponseWriter.WriteHeader(statusCode)
+}
+
+func (w *responseWriter) Write(data []byte) (int, error) {
+	w.written = true
+	return w.ResponseWriter.Write(data)
 }
