@@ -11,49 +11,60 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"strings"
+	"github.com/josevitorrodriguess/load-balancer-cli/internal/balancer"
 )
 
-func StartProxy(mux *http.ServeMux, server string) error {
-	serverParsed, err := url.Parse(server)
-	if err != nil {
-		return err
-	}
-
-	prox := httputil.NewSingleHostReverseProxy(serverParsed)
-
-	originalDirector := prox.Director
-	prox.Director = func(req *http.Request) {
-		originalDirector(req)
-
-		req.URL.Scheme = serverParsed.Scheme
-		req.URL.Host = serverParsed.Host
-		req.Host = serverParsed.Host
-
-		ip, _, err := net.SplitHostPort(req.RemoteAddr)
-		if err != nil {
-			ip = req.RemoteAddr
-		}
-
-		req.Header.Set("X-Forwarded-For", ip)
-		req.Header.Set("X-Real-IP", ip)
-		req.Header.Set("X-Fowarded-Proto", ip)
-
-		if req.TLS != nil {
-			req.Header.Set("X-Forwarded-Proto", "https")
-		} else {
-			req.Header.Set("X-Forwarded-Proto", "http")
-		}
-	}
-
-	prox.ErrorHandler = ErrorHandler
-
+func StartProxy(mux *http.ServeMux, lb balancer.Balancer) error {
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		log.Printf("Proxy receive: %s %s", r.Method, r.URL.Path)
+		backend, err := lb.NextBackend()
+		if err != nil {
+			http.Error(w, "no backend available", http.StatusBadGateway)
+			return
+		}
+
+		serverParsed, err := url.Parse(backend.URL)
+		if err != nil {
+			http.Error(w, "invalid backend url", http.StatusInternalServerError)
+			return
+		}
+
+		prox := httputil.NewSingleHostReverseProxy(serverParsed)
+
+		originalDirector := prox.Director
+		prox.Director = func(req *http.Request) {
+			originalDirector(req)
+
+			req.URL.Scheme = serverParsed.Scheme
+			req.URL.Host = serverParsed.Host
+			req.Host = serverParsed.Host
+
+			ip, _, err := net.SplitHostPort(req.RemoteAddr)
+			if err != nil {
+				ip = req.RemoteAddr
+			}
+
+			req.Header.Set("X-Forwarded-For", ip)
+			req.Header.Set("X-Real-IP", ip)
+
+			if req.TLS != nil {
+				req.Header.Set("X-Forwarded-Proto", "https")
+			} else {
+				req.Header.Set("X-Forwarded-Proto", "http")
+			}
+		}
+
+		prox.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
+			_ = lb.ReportFailure(backend.URL)
+			ErrorHandler(w, r, err)
+		}
+
+		log.Printf("Proxy receive: %s %s -> %s", r.Method, r.URL.Path, backend.URL)
 		prox.ServeHTTP(w, r)
 	})
 
 	return nil
 }
+
 
 func ErrorHandler(w http.ResponseWriter, r *http.Request, err error) {
 	status, code, message := classifyProxyError(err)
