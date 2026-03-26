@@ -52,8 +52,8 @@ func (c *Checker) checkBackend(backend balancer.Backend) {
 			"error", err,
 		)
 
-		if err := c.balancer.SetBackendAlive(backend.URL, false); err != nil {
-			slog.Error("failed to mark backend as down",
+		if err := c.balancer.ReportFailure(backend.URL); err != nil {
+			slog.Error("failed to report backend failure",
 				"backend_url", backend.URL,
 				"error", err,
 			)
@@ -80,11 +80,6 @@ func (c *Checker) checkBackend(backend balancer.Backend) {
 			return
 		}
 
-		slog.Info("health check passed",
-			"backend_url", backend.URL,
-			"status_code", resp.StatusCode,
-		)
-
 		return
 	}
 
@@ -93,8 +88,8 @@ func (c *Checker) checkBackend(backend balancer.Backend) {
 		"status_code", resp.StatusCode,
 	)
 
-	if err := c.balancer.SetBackendAlive(backend.URL, false); err != nil {
-		slog.Error("failed to mark backend as down",
+	if err := c.balancer.ReportFailure(backend.URL); err != nil {
+		slog.Error("failed to report backend failure",
 			"backend_url", backend.URL,
 			"error", err,
 		)
