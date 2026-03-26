@@ -5,12 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
 	"strings"
+
 	"github.com/josevitorrodriguess/load-balancer-cli/internal/balancer"
 )
 
@@ -58,7 +59,6 @@ func StartProxy(mux *http.ServeMux, lb balancer.Balancer) error {
 			ErrorHandler(w, r, err)
 		}
 
-		log.Printf("Proxy receive: %s %s -> %s", r.Method, r.URL.Path, backend.URL)
 		prox.ServeHTTP(w, r)
 	})
 
@@ -69,14 +69,11 @@ func StartProxy(mux *http.ServeMux, lb balancer.Balancer) error {
 func ErrorHandler(w http.ResponseWriter, r *http.Request, err error) {
 	status, code, message := classifyProxyError(err)
 
-	log.Printf(
-		"proxy error: method=%s path=%s remote_addr=%s status=%d code=%s err=%v",
-		r.Method,
-		r.URL.Path,
-		r.RemoteAddr,
-		status,
-		code,
-		err,
+	slog.Error("proxy error",
+		"method", r.Method,
+		"path", r.URL.Path,
+		"status", status,
+		"error", err,
 	)
 
 	if headersWritten(w) {
@@ -127,7 +124,7 @@ func writeProxyError(w http.ResponseWriter, status int, code, message string) {
 	}
 
 	if err := json.NewEncoder(w).Encode(payload); err != nil {
-		log.Printf("proxy error response write failed: %v", err)
+		slog.Error("proxy error response write failed", "error", err)
 	}
 }
 

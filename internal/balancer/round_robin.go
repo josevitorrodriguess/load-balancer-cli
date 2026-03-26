@@ -49,15 +49,9 @@ func (rr *RoundRobin) NextBackend() (*Backend, error) {
 		if backend.Alive {
 			slog.Info("backend selected",
 				"backend_url", backend.URL,
-				"index", rr.current,
 			)
 			return &rr.backends[rr.current], nil
 		}
-
-		slog.Warn("skipping dead backend",
-			"backend_url", backend.URL,
-			"index", rr.current,
-		)
 	}
 
 	slog.Error("no alive backend found")
@@ -73,11 +67,12 @@ func (rr *RoundRobin) SetBackendAlive(url string, alive bool) error {
 			old := rr.backends[i].Alive
 			rr.backends[i].Alive = alive
 
-			slog.Info("backend health changed",
-				"backend_url", url,
-				"old_status", old,
-				"new_status", alive,
-			)
+			if old != alive {
+				slog.Info("backend health changed",
+					"backend_url", url,
+					"alive", alive,
+				)
+			}
 
 			return nil
 		}
@@ -97,11 +92,6 @@ func (rr *RoundRobin) IncrementFailCount(url string) error {
 		}
 
 		rr.backends[i].FailCount++
-
-		slog.Warn("backend failure recorded",
-			"backend_url", url,
-			"fail_count", rr.backends[i].FailCount,
-		)
 
 		if rr.backends[i].FailCount >= maxFails {
 			rr.backends[i].Alive = false
@@ -125,13 +115,6 @@ func (rr *RoundRobin) ResetFailCount(url string) error {
 	for i := range rr.backends {
 		if rr.backends[i].URL != url {
 			continue
-		}
-
-		if rr.backends[i].FailCount != 0 {
-			slog.Info("backend fail count reset",
-				"backend_url", url,
-				"old_fail_count", rr.backends[i].FailCount,
-			)
 		}
 
 		rr.backends[i].FailCount = 0

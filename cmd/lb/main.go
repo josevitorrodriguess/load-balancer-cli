@@ -21,12 +21,6 @@ func main() {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		slog.Info("request received",
-			"method", r.Method,
-			"path", r.URL.Path,
-			"remote_addr", r.RemoteAddr,
-		)
-
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("ok"))
 	})
