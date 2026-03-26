@@ -12,13 +12,34 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/josevitorrodriguess/load-balancer-cli/internal/balancer"
 )
 
 const maxAttempts = 3
 
+type Config struct {
+	DialTimeout           time.Duration
+	TLSHandshakeTimeout   time.Duration
+	ResponseHeaderTimeout time.Duration
+}
+
+func DefaultConfig() Config {
+	return Config{
+		DialTimeout:           3 * time.Second,
+		TLSHandshakeTimeout:   3 * time.Second,
+		ResponseHeaderTimeout: 10 * time.Second,
+	}
+}
+
 func StartProxy(mux *http.ServeMux, lb balancer.Balancer) error {
+	return StartProxyWithConfig(mux, lb, DefaultConfig())
+}
+
+func StartProxyWithConfig(mux *http.ServeMux, lb balancer.Balancer, cfg Config) error {
+	transport := newTransport(cfg)
+
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		rw := &responseWriter{ResponseWriter: w}
 		body, err := readRequestBody(r)
@@ -52,6 +73,7 @@ func StartProxy(mux *http.ServeMux, lb balancer.Balancer) error {
 			}
 
 			prox := httputil.NewSingleHostReverseProxy(serverParsed)
+			prox.Transport = transport
 			originalDirector := prox.Director
 
 			prox.Director = func(req *http.Request) {
@@ -100,6 +122,18 @@ func StartProxy(mux *http.ServeMux, lb balancer.Balancer) error {
 	})
 
 	return nil
+}
+
+func newTransport(cfg Config) *http.Transport {
+	return &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: (&net.Dialer{
+			Timeout: cfg.DialTimeout,
+		}).DialContext,
+		ForceAttemptHTTP2:     true,
+		TLSHandshakeTimeout:   cfg.TLSHandshakeTimeout,
+		ResponseHeaderTimeout: cfg.ResponseHeaderTimeout,
+	}
 }
 
 func ErrorHandler(w http.ResponseWriter, r *http.Request, err error) {
