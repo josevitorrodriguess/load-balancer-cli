@@ -65,9 +65,15 @@ func StartProxyWithConfig(mux *http.ServeMux, lb balancer.Balancer, cfg Config) 
 			}
 
 			tried[backend.URL] = struct{}{}
+			if err := lb.IncrementActiveConnections(backend.URL); err != nil {
+				slog.Error("proxy error", "method", r.Method, "path", r.URL.Path, "backend_url", backend.URL, "error", err)
+				http.Error(rw, "no backend available", http.StatusBadGateway)
+				return
+			}
 
 			serverParsed, err := url.Parse(backend.URL)
 			if err != nil {
+				_ = lb.DecrementActiveConnections(backend.URL)
 				http.Error(rw, "invalid backend url", http.StatusInternalServerError)
 				return
 			}
@@ -106,6 +112,7 @@ func StartProxyWithConfig(mux *http.ServeMux, lb balancer.Balancer, cfg Config) 
 			}
 
 			prox.ServeHTTP(rw, cloneRequest(r, body))
+			_ = lb.DecrementActiveConnections(backend.URL)
 
 			if !attemptFailed {
 				return

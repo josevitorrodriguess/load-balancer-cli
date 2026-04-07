@@ -6,4 +6,6 @@ type Balancer interface {
 	Backends() []Backend
 	SetBackendAlive(url string, alive bool) error
 	ResetFailCount(url string) error
+	IncrementActiveConnections(url string) error
+	DecrementActiveConnections(url string) error
 }

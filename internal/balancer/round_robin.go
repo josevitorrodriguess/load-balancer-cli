@@ -15,6 +15,8 @@ type Backend struct {
 	URL       string
 	Alive     bool
 	FailCount int
+	Weight    int
+	ActiveConnections int
 }
 
 type RoundRobin struct {
@@ -136,4 +138,39 @@ func (rr *RoundRobin) Backends() []Backend {
 
 func (rr *RoundRobin) ReportFailure(url string) error {
 	return rr.IncrementFailCount(url)
+}
+
+func (rr *RoundRobin) IncrementActiveConnections(url string) error {
+	rr.mu.Lock()
+	defer rr.mu.Unlock()
+
+	for i := range rr.backends {
+		if rr.backends[i].URL != url {
+			continue
+		}
+
+		rr.backends[i].ActiveConnections++
+		return nil
+	}
+
+	return ErrBackendNotFound
+}
+
+func (rr *RoundRobin) DecrementActiveConnections(url string) error {
+	rr.mu.Lock()
+	defer rr.mu.Unlock()
+
+	for i := range rr.backends {
+		if rr.backends[i].URL != url {
+			continue
+		}
+
+		if rr.backends[i].ActiveConnections > 0 {
+			rr.backends[i].ActiveConnections--
+		}
+
+		return nil
+	}
+
+	return ErrBackendNotFound
 }
