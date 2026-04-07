@@ -1,0 +1,13 @@
+port: "8080"
+strategy: "round_robin"
+backends:
+  - url: "http://localhost:9001"
+    weight: 1
+  - url: "http://localhost:9002"
+    weight: 1
+timeouts:
+  dial: "3s"
+  tls_handshake: "3s"
+  response_header: "10s"
+  health_interval: "5s"
+  health_timeout: "2s"
